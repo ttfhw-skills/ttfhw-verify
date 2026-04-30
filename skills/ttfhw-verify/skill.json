@@ -1,0 +1,10 @@
+{
+  "name": "ttfhw-verify",
+  "description": "TTFHW仓库编译验证工具 - 验证仓库编译和UT运行情况，量化评估TTFHW能力。只采集客观指标（时长、数量、布尔值），不主观评分。",
+  "version": "2.0",
+  "author": "Claude Code",
+  "tags": ["verification", "build", "testing", "ttfhw"],
+  "tools": ["Bash", "Read", "Edit", "Write", "AskUserQuestion", "WebFetch", "WebSearch"],
+  "interactive": true,
+  "output_template": "build-verification/example_verification_report.json"
+}

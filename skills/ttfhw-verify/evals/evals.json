@@ -1,0 +1,43 @@
+{
+  "skill_name": "ttfhw-verify",
+  "evals": [
+    {
+      "id": 1,
+      "name": "verify_single_repo",
+      "prompt": "验证 example-repo 仓库的编译能力。使用远端服务器，SSH免密认证已完成。",
+      "expected_output": "生成 verification_report.json 报告，包含完整的构建统计、UT结果、TTFHW时长等字段。",
+      "files": [],
+      "assertions": [
+        {"name": "report_format_valid", "check": "JSON报告格式符合example_verification_report.json模板"},
+        {"name": "image_selection_recorded", "check": "image_selection字段包含method和selected_image"},
+        {"name": "attempt_log_present", "check": "attempt_log包含所有尝试记录"},
+        {"name": "overall_result_defined", "check": "overall.result为success/partial_success/failed之一"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "verify_cmake_project",
+      "prompt": "帮我验证一个CMake项目的仓库能否成功编译。需要检查依赖链。远端服务器已配置好SSH免密登录。",
+      "expected_output": "生成验证报告，记录镜像选择过程、依赖安装、构建尝试。",
+      "files": [],
+      "assertions": [
+        {"name": "clone_time_recorded", "check": "repo_info.clone_duration_seconds已记录"},
+        {"name": "docs_checked", "check": "documentation_checklist字段已填充"},
+        {"name": "build_attempted", "check": "attempt_log中有build阶段的尝试记录"},
+        {"name": "final_status_reported", "check": "build_result.status明确报告"}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "batch_verify_repos",
+      "prompt": "批量验证多个仓库，输出每个仓库的验证报告摘要。使用远端服务器，SSH免密已完成。",
+      "expected_output": "为每个仓库生成独立的verification_report.json，汇总报告展示各仓库的overall.result和total_ttfhw_minutes。",
+      "files": [],
+      "assertions": [
+        {"name": "multiple_reports_generated", "check": "为每个指定仓库生成了验证报告"},
+        {"name": "consistent_format", "check": "所有报告格式一致"},
+        {"name": "summary_provided", "check": "提供汇总信息（成功数、失败数、平均TTFHW等）"}
+      ]
+    }
+  ]
+}
