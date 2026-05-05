@@ -46,6 +46,18 @@
 - `npu_available`: NPU是否可用
 - `npu_count`: NPU数量
 
+### memory_detection
+内存检测与并发计算（新增）：
+- `memory_available_mb`: 可用内存（MB）
+- `memory_available_gb`: 可用内存（GB）
+- `memory_detection_formula`: 公式描述（如："available / 3.5GB"）
+- `safe_concurrency_limit`: 内存限制的安全并发数
+- `cpu_cores_available`: CPU核数
+- `recommended_concurrency`: 推荐并发数（取CPU和内存限制的较小值）
+- `final_concurrency_used`: 最终使用的并发数
+- `oom_occurred`: 是否发生OOM
+- `oom_retry_count`: OOM重试次数
+
 ### build_result
 构建结果：
 - `status`: success/failed

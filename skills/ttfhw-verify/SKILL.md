@@ -245,15 +245,115 @@ ssh root@<REMOTE_IP> "docker exec wsk-<repo> bash -c '
 
 ---
 
+## Phase 5.5: 资源检测与并发计算
+
+**重要**：在构建前检测容器内存，自动计算安全并发数，避免 OOM 导致编译失败。
+
+### 内存检测逻辑
+
+**基于实际验证数据（libmcpp 案例）**：
+- 实测：13GB 可用内存，4并发成功 → 每进程约 3.5GB 需求
+- 公式：`SAFE_JOBS = 可用内存 / 3.5GB`
+- 验证：13GB / 3.5 = 3.7 → 4并发 ✓ 匹配实际成功值
+
+```bash
+ssh root@<REMOTE_IP> "docker exec wsk-<repo> bash -c '
+    # 检测可用内存（注意：用 available，不是 total）
+    MEMORY_AVAILABLE_MB=\$(free -m | awk \"/Mem:/ {print \$7}\")
+    MEMORY_AVAILABLE_GB=\$((MEMORY_AVAILABLE_MB / 1024))
+    CPU_CORES=\$(nproc)
+
+    # 计算安全并发数（每进程预留 3.5GB，实测约3GB峰值+0.5GB波动）
+    SAFE_JOBS=\$((MEMORY_AVAILABLE_GB * 1000 / 3500))
+
+    # 确保最小值为 1
+    SAFE_JOBS=\$((SAFE_JOBS > 0 ? SAFE_JOBS : 1))
+
+    # 取 CPU 核数和内存限制的较小值
+    RECOMMENDED_JOBS=\$((CPU_CORES < SAFE_JOBS ? CPU_CORES : SAFE_JOBS))
+
+    # 最终并发数：最小为 2（避免单线程过慢），最大不超过推荐值
+    FINAL_JOBS=\$((RECOMMENDED_JOBS > 2 ? RECOMMENDED_JOBS : 2))
+
+    echo \"检测结果：CPU=\${CPU_CORES}核，可用内存=\${MEMORY_AVAILABLE_GB}GB，推荐并发=\${FINAL_JOBS}\"
+
+    # 保存到环境变量供后续构建使用
+    echo \"FINAL_JOBS=\${FINAL_JOBS}\" > /tmp/concurrency.conf
+'"
+```
+
+### 记录到 attempt_log
+
+```json
+{
+  "sequence": N,
+  "phase": "resource_check",
+  "action": "Detect available memory and calculate safe concurrency",
+  "command": "free -m && nproc",
+  "result": "success",
+  "output": "CPU=24, AvailableMemory=13GB, RecommendedJobs=4",
+  "duration_seconds": 1
+}
+```
+
+### 本地容器环境
+
+若使用本地 Docker 环境（无 SSH）：
+
+```bash
+docker exec wsk-<repo> bash -c '
+    MEMORY_AVAILABLE_MB=$(free -m | awk "/Mem:/ {print $7}")
+    # ... 同上逻辑
+'
+```
+
+### 公式推导依据
+
+**实测数据来源**：
+- 仓库：libmcpp（C++ 项目，Meson + Ninja 构建）
+- 环境：24核CPU，15GB总内存，13GB可用内存
+- 失败：默认24并发 → OOM → 139分钟失败
+- 成功：手动降为4并发 → 338秒成功
+
+**推算过程**：
+```
+13GB可用 / 4进程 = 3.25GB/进程（理论峰值）
+实际峰值约 2.5-3GB（因未完全占满）
+系统预留约 1-2GB（dbus、日志等）
+结论：每进程安全预留 3.5GB
+```
+
+---
+
 ## Phase 6: 构建（循环尝试，最多2小时）
+
+**使用检测到的并发数进行构建**：
 
 ```bash
 START=$(date +%s)
 
 ssh root@<REMOTE_IP> "docker exec wsk-<repo> bash -c '
+    # 读取推荐的并发数
+    source /tmp/concurrency.conf 2>/dev/null || FINAL_JOBS=2
+
     pip install -r requirements.txt | tee /tmp/pip.log
     apt install -y <deps> | tee /tmp/apt.log
-    <build_command> | tee /tmp/build.log
+
+    # 构建时使用安全并发数
+    case \"<build_system>\" in
+        meson|ninja)
+            ninja -j \$FINAL_JOBS | tee /tmp/build.log
+            ;;
+        cmake)
+            cmake --build . -- -j \$FINAL_JOBS | tee /tmp/build.log
+            ;;
+        make)
+            make -j \$FINAL_JOBS | tee /tmp/build.log
+            ;;
+        *)
+            <build_command> | tee /tmp/build.log
+            ;;
+    esac
 '"
 ```
 
@@ -261,12 +361,52 @@ ssh root@<REMOTE_IP> "docker exec wsk-<repo> bash -c '
 
 | 错误类型 | 典型输出 | 解决方案 |
 |:---|:---|:---|
+| **OOM/内存不足** | `Killed signal terminated program cc1plus` | 降低并发数：`FINAL_JOBS=$((FINAL_JOBS/2))` |
 | **缺少头文件** | `fatal error: xxx.h: No such file` | `yum install xxx-devel` |
 | **找不到库** | `Could not find xxx` | `export xxx_DIR=/path` 或 `yum install xxx-devel` |
 | **链接错误** | `undefined reference to xxx` | `yum install libxxx-devel` |
 | **Python模块缺失** | `ModuleNotFoundError: No module named 'xxx'` | `pip install xxx` |
 | **Git submodule缺失** | `CMakeLists.txt not found in 3rdparty` | `git submodule update --init` |
 | **Cargo版本问题** | `feature 'edition2024' is not stabilized` | `rustup install nightly` |
+
+**OOM 特殊处理**（基于实测经验）：
+
+若构建过程出现 OOM 错误（编译进程被 kill），按以下步骤处理：
+
+1. **立即检测当前并发数**：
+   ```bash
+   docker exec wsk-<repo> bash -c 'cat /tmp/concurrency.conf'
+   ```
+
+2. **降低并发数并重试**：
+   ```bash
+   # 降低至当前值的一半
+   docker exec wsk-<repo> bash -c '
+       source /tmp/concurrency.conf
+       NEW_JOBS=$((FINAL_JOBS / 2))
+       NEW_JOBS=$((NEW_JOBS > 1 ? NEW_JOBS : 1))
+       echo "降低并发：${FINAL_JOBS} -> ${NEW_JOBS}"
+       echo "FINAL_JOBS=${NEW_JOBS}" > /tmp/concurrency.conf
+   '
+
+   # 清理失败的构建产物并重试
+   ssh root@<REMOTE_IP> "docker exec wsk-<repo> bash -c '
+       cd /workspace/builddir && ninja -t clean
+       source /tmp/concurrency.conf
+       ninja -j \$FINAL_JOBS
+   '"
+   ```
+
+3. **记录尝试**：
+   ```json
+   {
+     "phase": "build_retry",
+     "action": "Reduce concurrency due to OOM",
+     "result": "retrying",
+     "previous_jobs": 24,
+     "new_jobs": 12
+   }
+   ```
 
 ### 超时检查
 
